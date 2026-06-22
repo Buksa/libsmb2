@@ -2011,6 +2011,10 @@ getinfo_cb_2(struct smb2_context *smb2, int status,
         if (stat_data->status != SMB2_STATUS_SUCCESS) {
                 return;
         }
+        if (rep == NULL || rep->output_buffer == NULL) {
+                stat_data->status = SMB2_STATUS_INVALID_PARAMETER;
+                return;
+        }
 
         if (stat_data->info_type == SMB2_0_INFO_FILE &&
             stat_data->file_info_class == SMB2_FILE_ALL_INFORMATION) {
@@ -4142,6 +4146,9 @@ int smb2_serve_port(struct smb2_server *server, const int max_connections, smb2_
                 maxfd = server->fd;
 
                 for (smb2 = smb2_active_contexts(); smb2; smb2 = smb2->next) {
+                        if (!smb2_is_server(smb2) || smb2->owning_server != server) {
+                                continue;
+                        }
                         if (SMB2_VALID_SOCKET(smb2_get_fd(smb2))) {
                                 events = smb2_which_events(smb2);
                                 if (events) {
@@ -4174,7 +4181,12 @@ int smb2_serve_port(struct smb2_server *server, const int max_connections, smb2_
                         now = time(NULL);
 
                         /* for each client context ready to read, process that context */
-                        for (smb2 = smb2_active_contexts(); smb2; smb2 = smb2->next) {
+                        for (smb2 = smb2_active_contexts(); smb2; ) {
+                                struct smb2_context *next = smb2->next;
+                                if (!smb2_is_server(smb2) || smb2->owning_server != server) {
+                                        smb2 = next;
+                                        continue;
+                                }
                                 if (SMB2_VALID_SOCKET(smb2_get_fd(smb2)) && FD_ISSET(smb2_get_fd(smb2), &rfds)) {
                                         if (smb2_service(smb2, POLLIN) < 0) {
                                                 smb2_set_error(smb2, "smb2_service (in) failed with : "
@@ -4198,6 +4210,7 @@ int smb2_serve_port(struct smb2_server *server, const int max_connections, smb2_
                                 if (smb2->timeout) {
                                         smb2_timeout_pdus(smb2);
                                 }
+                                smb2 = next;
                         }
 
                         if (FD_ISSET(server->fd, &rfds)) {
@@ -4237,7 +4250,7 @@ int smb2_serve_port(struct smb2_server *server, const int max_connections, smb2_
                          * do only one per iteration since active list changes on destroy
                          */
                         for (smb2 = smb2_active_contexts(); smb2; smb2 = smb2->next) {
-                                if (smb2_is_server(smb2)) {
+                                if (smb2_is_server(smb2) && smb2->owning_server == server) {
                                         if (!SMB2_VALID_SOCKET(smb2_get_fd(smb2))) {
                                                 if (server->handlers && server->handlers->destruction_event) {
                                                         server->handlers->destruction_event(server, smb2);
@@ -4274,4 +4287,3 @@ int smb2_serve_port(struct smb2_server *server, const int max_connections, smb2_
 #endif
         return err;
 }
-
