@@ -1420,6 +1420,9 @@ smb2_bind_and_listen(const uint16_t port, const int max_connections, int *out_fd
                 return -EIO;
         }
 
+        int reuse = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
         set_nonblocking(fd);
         set_tcp_sockopt(fd, TCP_NODELAY, 1);
 
@@ -1431,8 +1434,10 @@ smb2_bind_and_listen(const uint16_t port, const int max_connections, int *out_fd
         if (bind(fd, (struct sockaddr *)&serv_addr, socksize) != 0
 #if defined(_WIN32) || defined(_MSC_VER)
                   && WSAGetLastError() != WSAEWOULDBLOCK) {
+                fprintf(stderr, "bind() failed: wsaerr=%d\n", WSAGetLastError());
 #else
                   && errno != EINPROGRESS) {
+                fprintf(stderr, "bind() failed for port %d: errno=%d (%s)\n", port, errno, strerror(errno));
 #endif
                 close(fd);
                 return -EIO;

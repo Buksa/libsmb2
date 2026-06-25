@@ -3411,6 +3411,9 @@ smb2_query_directory_request_cb(struct smb2_server *server, struct smb2_context 
                         pdu = smb2_cmd_query_directory_reply_async(smb2, req, &rep, NULL, cb_data);
                 }
         }
+        if (rep.output_buffer) {
+                free(rep.output_buffer);
+        }
         if (req->name) {
                 smb2_free_data(smb2, discard_const(req->name));
         }
@@ -3479,6 +3482,9 @@ smb2_query_info_request_cb(struct smb2_server *server, struct smb2_context *smb2
                 else {
                         pdu = smb2_cmd_query_info_reply_async(smb2, req, &rep, NULL, cb_data);
                 }
+        }
+        if (rep.output_buffer) {
+                free(rep.output_buffer);
         }
         if (pdu != NULL) {
                 smb2_set_pdu_message_id(smb2, pdu, smb2->message_id);
