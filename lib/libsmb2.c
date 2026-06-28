@@ -3631,6 +3631,7 @@ smb2_session_setup_request_cb(struct smb2_context *smb2, int status, void *comma
         int response_length;
         int is_spnego_wrapped;
         int have_valid_session_key = 1;
+        int require_session_key = 0;
         int ret;
 
         if (status) {
@@ -3738,6 +3739,17 @@ smb2_session_setup_request_cb(struct smb2_context *smb2, int status, void *comma
                                                     &smb2->session_key_size) < 0) {
                                 have_valid_session_key = 0;
                         }
+                        if (smb2->session_key == NULL ||
+                            smb2->session_key_size == 0) {
+                                have_valid_session_key = 0;
+                        } else {
+                                uint8_t zero_key[SMB2_KEY_SIZE] = {0};
+                                if (!memcmp(smb2->session_key, zero_key,
+                                            MIN(smb2->session_key_size,
+                                                SMB2_KEY_SIZE))) {
+                                        have_valid_session_key = 0;
+                                }
+                        }
                 }
         }
 #ifdef HAVE_LIBKRB5
@@ -3782,7 +3794,10 @@ smb2_session_setup_request_cb(struct smb2_context *smb2, int status, void *comma
                 }
         }
 #endif
-        if (smb2->sign && have_valid_session_key == 0) {
+        require_session_key = smb2->sign ||
+                (!server->allow_anonymous &&
+                 smb2->dialect == SMB2_VERSION_0311 && !smb2->seal);
+        if (require_session_key && have_valid_session_key == 0) {
                 smb2_close_context(smb2);
                 smb2_set_error(smb2, "Signing required by server. Session "
                                "Key is not available %s",
@@ -3791,7 +3806,7 @@ smb2_session_setup_request_cb(struct smb2_context *smb2, int status, void *comma
                 return;
         }
 
-        if (smb2->sign)  {
+        if (require_session_key)  {
                 /* Derive the signing key from session key
                 * This is based on negotiated protocol
                 */
@@ -4020,6 +4035,8 @@ smb2_negotiate_request_cb(struct smb2_context *smb2, int status, void *command_d
         /* remember negotiated capabilites and security mode */
         smb2->capabilities = rep.capabilities;
         smb2->security_mode = rep.security_mode;
+        server->capabilities = rep.capabilities;
+        server->security_mode = rep.security_mode;
 
         now.tv_sec = time(NULL);
         now.tv_usec = 0;
