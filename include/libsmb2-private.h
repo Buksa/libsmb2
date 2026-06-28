@@ -143,6 +143,7 @@ struct smb2_context {
         t_socket fd;
 
         struct smb2_server *owning_server;
+        struct smb2_context *server_next;
 
         t_socket *connecting_fds;
         size_t connecting_fds_count;

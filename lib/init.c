@@ -283,6 +283,7 @@ struct smb2_context *smb2_init_context(void)
         ret = getlogin_r(buf, sizeof(buf));
         smb2_set_user(smb2, ret == 0 ? buf : "Guest");
         smb2->fd = SMB2_INVALID_SOCKET;
+        smb2->server_next = NULL;
         smb2->connecting_fds = NULL;
         smb2->connecting_fds_count = 0;
         smb2->addrinfos = NULL;
@@ -307,11 +308,34 @@ struct smb2_context *smb2_init_context(void)
         return smb2;
 }
 
+static void
+smb2_detach_from_server(struct smb2_context *smb2)
+{
+        struct smb2_server *server;
+        struct smb2_context **ctx;
+
+        if (smb2 == NULL || smb2->owning_server == NULL) {
+                return;
+        }
+
+        server = smb2->owning_server;
+        for (ctx = &server->contexts; *ctx; ctx = &(*ctx)->server_next) {
+                if (*ctx == smb2) {
+                        *ctx = smb2->server_next;
+                        break;
+                }
+        }
+        smb2->owning_server = NULL;
+        smb2->server_next = NULL;
+}
+
 void smb2_destroy_context(struct smb2_context *smb2)
 {
         if (smb2 == NULL) {
                 return;
         }
+
+        smb2_detach_from_server(smb2);
 
         if (SMB2_VALID_SOCKET(smb2->fd)) {
                 if (smb2->change_fd) {

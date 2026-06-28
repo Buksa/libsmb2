@@ -1365,6 +1365,7 @@ struct smb2_server {
         int fd;
         uint16_t port;
         uint64_t session_counter;
+        struct smb2_context *contexts;
         struct smb2_server_request_handlers *handlers;
         uint32_t max_transact_size;
         uint32_t max_read_size;

@@ -4092,6 +4092,35 @@ int smb2_serve_port_async(const int fd, const int to_msecs, struct smb2_context 
         return err;
 }
 
+static void
+smb2_server_context_attach(struct smb2_server *server, struct smb2_context *smb2)
+{
+        smb2->owning_server = server;
+        smb2->server_next = server->contexts;
+        server->contexts = smb2;
+}
+
+static int
+smb2_destroy_server_contexts(struct smb2_server *server, int only_closed)
+{
+        struct smb2_context *smb2;
+        int destroyed = 0;
+
+        for (smb2 = server->contexts; smb2; ) {
+                struct smb2_context *next = smb2->server_next;
+
+                if (!only_closed || !SMB2_VALID_SOCKET(smb2_get_fd(smb2))) {
+                        if (server->handlers && server->handlers->destruction_event) {
+                                server->handlers->destruction_event(server, smb2);
+                        }
+                        smb2_destroy_context(smb2);
+                        destroyed++;
+                }
+                smb2 = next;
+        }
+        return destroyed;
+}
+
 int smb2_serve_port(struct smb2_server *server, const int max_connections, smb2_client_connection cb, void *cb_data)
 {
         struct smb2_context *smb2;
@@ -4130,6 +4159,8 @@ int smb2_serve_port(struct smb2_server *server, const int max_connections, smb2_
                 return err;
         }
 #endif
+        server->contexts = NULL;
+
         err = smb2_bind_and_listen(server->port, max_connections, &server->fd);
         if (err != 0) {
                 return err;
@@ -4137,18 +4168,15 @@ int smb2_serve_port(struct smb2_server *server, const int max_connections, smb2_
         server->session_counter = 0x1234;
 
         do {
-                /* select on the file descriptors of all active client connections and our server socket
-                   for the first readable event
+                /* select on the file descriptors of all server-owned client
+                   connections and our server socket for the first readable event
                 */
                 FD_ZERO(&rfds);
                 FD_ZERO(&wfds);
                 FD_SET(server->fd, &rfds);
                 maxfd = server->fd;
 
-                for (smb2 = smb2_active_contexts(); smb2; smb2 = smb2->next) {
-                        if (!smb2_is_server(smb2) || smb2->owning_server != server) {
-                                continue;
-                        }
+                for (smb2 = server->contexts; smb2; smb2 = smb2->server_next) {
                         if (SMB2_VALID_SOCKET(smb2_get_fd(smb2))) {
                                 events = smb2_which_events(smb2);
                                 if (events) {
@@ -4180,13 +4208,9 @@ int smb2_serve_port(struct smb2_server *server, const int max_connections, smb2_
                 if (ready > 0) {
                         now = time(NULL);
 
-                        /* for each client context ready to read, process that context */
-                        for (smb2 = smb2_active_contexts(); smb2; ) {
-                                struct smb2_context *next = smb2->next;
-                                if (!smb2_is_server(smb2) || smb2->owning_server != server) {
-                                        smb2 = next;
-                                        continue;
-                                }
+                        /* for each server-owned context ready to read, process that context */
+                        for (smb2 = server->contexts; smb2; ) {
+                                struct smb2_context *next = smb2->server_next;
                                 if (SMB2_VALID_SOCKET(smb2_get_fd(smb2)) && FD_ISSET(smb2_get_fd(smb2), &rfds)) {
                                         if (smb2_service(smb2, POLLIN) < 0) {
                                                 smb2_set_error(smb2, "smb2_service (in) failed with : "
@@ -4220,7 +4244,8 @@ int smb2_serve_port(struct smb2_server *server, const int max_connections, smb2_
                                         c_data = calloc(1, sizeof(struct connect_data));
                                         if (c_data == NULL) {
                                                 smb2_set_error(smb2, "Failed to allocate connect_data");
-                                                smb2_close_context(smb2);
+                                                smb2_destroy_context(smb2);
+                                                continue;
                                         }
                                         c_data->server_context = server;
                                         smb2->connect_data = c_data;
@@ -4229,10 +4254,11 @@ int smb2_serve_port(struct smb2_server *server, const int max_connections, smb2_
                                         smb2->pdu = smb2_allocate_pdu(smb2, SMB2_NEGOTIATE, smb2_negotiate_request_cb, c_data);
                                         if (!smb2->pdu) {
                                                 smb2_set_error(smb2, "can not alloc pdu for request");
-                                                smb2_close_context(smb2);
+                                                smb2_destroy_context(smb2);
+                                                continue;
                                         }
                                         /* got a new smb2 context with a connection, enlist it and tell user */
-                                        smb2->owning_server = server;
+                                        smb2_server_context_attach(server, smb2);
                                         smb2->max_transact_size = server->max_transact_size;
                                         smb2->max_read_size     = server->max_read_size;
                                         smb2->max_write_size    = server->max_write_size;
@@ -4246,20 +4272,12 @@ int smb2_serve_port(struct smb2_server *server, const int max_connections, smb2_
                                 }
                         }
 
-                        /* cull connection-less servers here (servers who's client has disconnected)
-                         * do only one per iteration since active list changes on destroy
-                         */
-                        for (smb2 = smb2_active_contexts(); smb2; smb2 = smb2->next) {
-                                if (smb2_is_server(smb2) && smb2->owning_server == server) {
-                                        if (!SMB2_VALID_SOCKET(smb2_get_fd(smb2))) {
-                                                if (server->handlers && server->handlers->destruction_event) {
-                                                        server->handlers->destruction_event(server, smb2);
-                                                }
-                                                smb2_destroy_context(smb2);
-                                                break;
-                                        }
+                        /* cull connection-less server contexts here */
+                        for (smb2 = server->contexts; smb2; smb2 = smb2->server_next) {
+                                if (!SMB2_VALID_SOCKET(smb2_get_fd(smb2))) {
+                                        smb2_destroy_server_contexts(server, 1);
+                                        break;
                                 }
-                                /* client connections are destroyed when they timeout or get disconnected */
                         }
                 }
 #ifdef HAVE_LIBKRB5
@@ -4278,10 +4296,7 @@ int smb2_serve_port(struct smb2_server *server, const int max_connections, smb2_
         close(server->fd);
         server->fd = -1;
 
-        while (smb2_active_contexts()) {
-                smb2 = smb2_active_contexts();
-                smb2_destroy_context(smb2);
-        }
+        smb2_destroy_server_contexts(server, 0);
 #ifdef HAVE_LIBKRB5
         krb5_free_server_credentials(server);
 #endif
