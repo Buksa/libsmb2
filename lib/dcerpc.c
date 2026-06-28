@@ -64,6 +64,7 @@
 #include "smb2.h"
 #include "libsmb2.h"
 #include "libsmb2-dcerpc.h"
+#include "libsmb2-dcerpc-srvsvc.h"
 #include "libsmb2-raw.h"
 #include "libsmb2-private.h"
 
@@ -1614,6 +1615,202 @@ void dcerpc_set_request(struct dcerpc_pdu *pdu, void *request)
 void *dcerpc_get_request(struct dcerpc_pdu *pdu)
 {
         return pdu->request;
+}
+
+static uint16_t
+dcerpc_get_le16(const uint8_t *buf)
+{
+        return (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
+}
+
+static uint32_t
+dcerpc_get_le32(const uint8_t *buf)
+{
+        return (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) |
+               ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
+}
+
+static void
+dcerpc_set_le16(uint8_t *buf, uint16_t v)
+{
+        buf[0] = v & 0xff;
+        buf[1] = (v >> 8) & 0xff;
+}
+
+static void
+dcerpc_set_le32(uint8_t *buf, uint32_t v)
+{
+        buf[0] = v & 0xff;
+        buf[1] = (v >> 8) & 0xff;
+        buf[2] = (v >> 16) & 0xff;
+        buf[3] = (v >> 24) & 0xff;
+}
+
+static int
+dcerpc_server_bind_ack(const uint8_t *input, uint32_t input_count,
+                       void **output, uint32_t *output_count)
+{
+        static const uint8_t ndr32_uuid[16] = {
+                0x04, 0x5d, 0x88, 0x8a, 0xeb, 0x1c, 0xc9, 0x11,
+                0x9f, 0xe8, 0x08, 0x00, 0x2b, 0x10, 0x48, 0x60
+        };
+        const char secondary_addr[] = "\\PIPE\\srvsvc";
+        uint32_t call_id = dcerpc_get_le32(input + 12);
+        uint16_t sec_len = sizeof(secondary_addr);
+        uint32_t off = 16 + 8 + 2 + sec_len;
+        uint32_t pad = (4 - (off & 3)) & 3;
+        uint32_t frag_len = off + pad + 4 + 24;
+        uint8_t *buf;
+
+        if(input_count < 16)
+                return SMB2_STATUS_INVALID_PARAMETER;
+
+        buf = calloc(1, frag_len);
+        if(buf == NULL)
+                return SMB2_STATUS_INSUFFICIENT_RESOURCES;
+
+        buf[0] = 5;
+        buf[1] = 0;
+        buf[2] = PDU_TYPE_BIND_ACK;
+        buf[3] = PFC_FIRST_FRAG | PFC_LAST_FRAG;
+        buf[4] = DCERPC_DR_LITTLE_ENDIAN;
+        dcerpc_set_le16(buf + 8, frag_len);
+        dcerpc_set_le32(buf + 12, call_id);
+
+        dcerpc_set_le16(buf + 16, 32768);
+        dcerpc_set_le16(buf + 18, 32768);
+        dcerpc_set_le32(buf + 20, 0);
+        dcerpc_set_le16(buf + 24, sec_len);
+        memcpy(buf + 26, secondary_addr, sec_len);
+
+        off = 26 + sec_len + pad;
+        buf[off] = 1;
+        off += 4;
+        dcerpc_set_le16(buf + off, ACK_RESULT_ACCEPTANCE);
+        dcerpc_set_le16(buf + off + 2, ACK_REASON_REASON_NOT_SPECIFIED);
+        memcpy(buf + off + 4, ndr32_uuid, sizeof(ndr32_uuid));
+        dcerpc_set_le32(buf + off + 20, 2);
+
+        *output = buf;
+        *output_count = frag_len;
+        return 0;
+}
+
+static int
+dcerpc_server_netr_share_enum(struct smb2_context *smb2,
+                              const uint8_t *input, uint32_t input_count,
+                              const char *share_name,
+                              void **output, uint32_t *output_count)
+{
+        struct dcerpc_context dce = {0};
+        struct dcerpc_pdu *pdu;
+        struct smb2_iovec iov;
+        struct srvsvc_SHARE_INFO_1 share;
+        struct srvsvc_NetrShareEnum_rep rep;
+        uint32_t call_id;
+        uint16_t context_id;
+        int offset = 0;
+        int stub_offset;
+        uint32_t frag_len;
+        uint8_t *buf;
+
+        if(input_count < 24)
+                return SMB2_STATUS_INVALID_PARAMETER;
+
+        call_id = dcerpc_get_le32(input + 12);
+        context_id = dcerpc_get_le16(input + 20);
+        if(dcerpc_get_le16(input + 22) != SRVSVC_NETRSHAREENUM)
+                return SMB2_STATUS_NOT_SUPPORTED;
+
+        dce.smb2 = smb2;
+        dce.packed_drep[0] = DCERPC_DR_LITTLE_ENDIAN;
+        pdu = dcerpc_allocate_pdu(&dce, ENCODING_NDR, DCERPC_ENCODE, NSE_BUF_SIZE);
+        if(pdu == NULL)
+                return SMB2_STATUS_INSUFFICIENT_RESOURCES;
+
+        pdu->hdr.packed_drep[0] = DCERPC_DR_LITTLE_ENDIAN;
+
+        iov.buf = pdu->payload;
+        iov.len = NSE_BUF_SIZE;
+        iov.free = NULL;
+        memset(iov.buf, 0, NSE_BUF_SIZE);
+
+        ((uint8_t *)iov.buf)[0] = 5;
+        ((uint8_t *)iov.buf)[1] = 0;
+        ((uint8_t *)iov.buf)[2] = PDU_TYPE_RESPONSE;
+        ((uint8_t *)iov.buf)[3] = PFC_FIRST_FRAG | PFC_LAST_FRAG;
+        ((uint8_t *)iov.buf)[4] = DCERPC_DR_LITTLE_ENDIAN;
+        dcerpc_set_le32((uint8_t *)iov.buf + 12, call_id);
+        dcerpc_set_le16((uint8_t *)iov.buf + 20, context_id);
+        offset = 24;
+        stub_offset = offset;
+
+        memset(&share, 0, sizeof(share));
+        share.netname = discard_const(share_name ? share_name : "share");
+        share.type = SHARE_TYPE_DISKTREE;
+        share.remark = discard_const("Movian");
+
+        memset(&rep, 0, sizeof(rep));
+        rep.ses.Level = SHARE_INFO_1;
+        rep.ses.ShareEnum.Level1.EntriesRead = 1;
+        rep.ses.ShareEnum.Level1.share_info_1 = &share;
+        rep.total_entries = 1;
+        rep.resume_handle = 0;
+        rep.status = 0;
+
+        pdu->top_level = 1;
+        if(srvsvc_NetrShareEnum_rep_coder("Response", &dce, pdu,
+                                          &iov, &offset, &rep)) {
+                dcerpc_free_pdu(&dce, pdu);
+                return SMB2_STATUS_INTERNAL_ERROR;
+        }
+
+        frag_len = (uint32_t)offset;
+        dcerpc_set_le16((uint8_t *)iov.buf + 8, (uint16_t)frag_len);
+        dcerpc_set_le32((uint8_t *)iov.buf + 16, frag_len - stub_offset);
+
+        buf = malloc(frag_len);
+        if(buf == NULL) {
+                dcerpc_free_pdu(&dce, pdu);
+                return SMB2_STATUS_INSUFFICIENT_RESOURCES;
+        }
+        memcpy(buf, iov.buf, frag_len);
+        dcerpc_free_pdu(&dce, pdu);
+
+        *output = buf;
+        *output_count = frag_len;
+        return 0;
+}
+
+int
+dcerpc_server_process_srvsvc(struct smb2_context *smb2,
+                             const void *input, uint32_t input_count,
+                             const char *share_name,
+                             void **output, uint32_t *output_count)
+{
+        const uint8_t *buf = input;
+
+        if(output == NULL || output_count == NULL)
+                return SMB2_STATUS_INVALID_PARAMETER;
+        *output = NULL;
+        *output_count = 0;
+
+        if(buf == NULL || input_count < 16)
+                return SMB2_STATUS_INVALID_PARAMETER;
+        if(buf[0] != 5 || buf[1] != 0)
+                return SMB2_STATUS_INVALID_PARAMETER;
+
+        switch(buf[2]) {
+        case PDU_TYPE_BIND:
+                return dcerpc_server_bind_ack(buf, input_count, output,
+                                              output_count);
+        case PDU_TYPE_REQUEST:
+                return dcerpc_server_netr_share_enum(smb2, buf, input_count,
+                                                     share_name, output,
+                                                     output_count);
+        default:
+                return SMB2_STATUS_NOT_SUPPORTED;
+        }
 }
 
 /*

@@ -142,6 +142,11 @@ int dcerpc_get_switch_is(struct dcerpc_pdu *pdu);
 void dcerpc_set_request(struct dcerpc_pdu *pdu, void *request);
 void *dcerpc_get_request(struct dcerpc_pdu *pdu);
 
+int dcerpc_server_process_srvsvc(struct smb2_context *smb2,
+                                 const void *input, uint32_t input_count,
+                                 const char *share_name,
+                                 void **output, uint32_t *output_count);
+
 int ndr_ptr_coder(char *name, struct dcerpc_context *dce, struct dcerpc_pdu *pdu,
                   struct smb2_iovec *iov, int *offset, void *ptr,
                   enum ptr_type type, dcerpc_coder coder);
