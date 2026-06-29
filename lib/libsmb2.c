@@ -3057,12 +3057,13 @@ smb2_tree_connect_request_cb(struct smb2_server *server, struct smb2_context *sm
                 ret = server->handlers->tree_connect_cmd(server, smb2, req, &rep);
         }
         if (!ret) {
-                pdu = smb2_cmd_tree_connect_reply_async(smb2, &rep, 0, NULL, cb_data);
+                pdu = smb2_cmd_tree_connect_reply_async(smb2, &rep, rep.tree_id, NULL, cb_data);
         }
         else if (ret < 0) {
+                uint32_t status = ret == -1 ? SMB2_STATUS_NOT_IMPLEMENTED : ret;
                 memset(&err, 0, sizeof(err));
                 pdu = smb2_cmd_error_reply_async(smb2,
-                                &err, SMB2_TREE_CONNECT, SMB2_STATUS_NOT_IMPLEMENTED, NULL, cb_data);
+                                &err, SMB2_TREE_CONNECT, status, NULL, cb_data);
         }
         if (pdu != NULL) {
                 smb2_set_pdu_message_id(smb2, pdu, smb2->message_id);
@@ -3106,6 +3107,7 @@ smb2_create_request_cb(struct smb2_server *server, struct smb2_context *smb2, vo
         struct smb2_pdu *pdu = NULL;
         int ret = -1;
 
+        req->tree_id = smb2->hdr.sync.tree_id;
         memset(&rep, 0, sizeof(rep));
         if (server->handlers && server->handlers->create_cmd) {
                 ret = server->handlers->create_cmd(server, smb2, req, &rep);
@@ -3114,9 +3116,10 @@ smb2_create_request_cb(struct smb2_server *server, struct smb2_context *smb2, vo
                 pdu = smb2_cmd_create_reply_async(smb2, &rep, NULL, cb_data);
         }
         else if (ret < 0) {
+                uint32_t status = ret == -1 ? SMB2_STATUS_NOT_IMPLEMENTED : ret;
                 memset(&err, 0, sizeof(err));
                 pdu = smb2_cmd_error_reply_async(smb2,
-                                &err, SMB2_CREATE, SMB2_STATUS_NOT_IMPLEMENTED, NULL, cb_data);
+                                &err, SMB2_CREATE, status, NULL, cb_data);
         }
         if (pdu) {
                 if (req->name) {
@@ -3293,9 +3296,10 @@ smb2_lock_request_cb(struct smb2_server *server, struct smb2_context *smb2, void
                 pdu = smb2_cmd_lock_reply_async(smb2, NULL, cb_data);
         }
         else if(ret < 0) {
+                uint32_t status = ret == -1 ? SMB2_STATUS_NOT_IMPLEMENTED : ret;
                 memset(&err, 0, sizeof(err));
                 pdu = smb2_cmd_error_reply_async(smb2,
-                                &err, SMB2_LOCK, SMB2_STATUS_NOT_IMPLEMENTED, NULL, cb_data);
+                                &err, SMB2_LOCK, status, NULL, cb_data);
         }
         if (pdu != NULL) {
                 smb2_set_pdu_message_id(smb2, pdu, smb2->message_id);
@@ -3411,8 +3415,9 @@ smb2_query_directory_request_cb(struct smb2_server *server, struct smb2_context 
                 ret = server->handlers->query_directory_cmd(server, smb2, req, &rep);
         }
         if (ret < 0) {
+                uint32_t status = ret == -1 ? SMB2_STATUS_NOT_IMPLEMENTED : ret;
                 pdu = smb2_cmd_error_reply_async(smb2,
-                                &err, SMB2_QUERY_DIRECTORY, SMB2_STATUS_NOT_IMPLEMENTED, NULL, cb_data);
+                                &err, SMB2_QUERY_DIRECTORY, status, NULL, cb_data);
         }
         else if (!ret) {
                 if (rep.output_buffer_length == 0) {

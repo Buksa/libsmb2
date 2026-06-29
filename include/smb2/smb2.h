@@ -217,6 +217,7 @@ struct smb2_tree_connect_request {
 #define SMB2_TREE_CONNECT_REPLY_SIZE 16
 
 struct smb2_tree_connect_reply {
+        uint32_t tree_id;
         uint8_t share_type;
         uint32_t share_flags;
         uint32_t capabilities;
@@ -322,6 +323,7 @@ struct smb2_tree_connect_reply {
 #define SMB2_FILE_OPEN_FOR_FREE_SPACE_QUERY 0x00800000
 
 struct smb2_create_request {
+        uint32_t tree_id;
         uint8_t security_flags;
         uint8_t requested_oplock_level;
         uint32_t impersonation_level;
