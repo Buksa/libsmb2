@@ -207,13 +207,15 @@ smb2_encode_query_directory_reply(struct smb2_context *smb2,
         int fslen;
         uint8_t *buf;
         struct smb2_utf16 *name = NULL;
-        struct smb2_fileidbothdirectoryinformation *fs;
+        struct smb2_fileidfulldirectoryinformation *fsf;
+        struct smb2_fileidbothdirectoryinformation *fsb;
         struct smb2_iovec *iov;
         uint32_t fs_size;
         uint32_t fname_len;
         int offset;
         int in_offset;
         int in_remain;
+        uint32_t entry_stride;
 
         len = SMB2_QUERY_DIRECTORY_REPLY_SIZE & 0xfffe;
         len = PAD_TO_32BIT(len);
@@ -228,23 +230,44 @@ smb2_encode_query_directory_reply(struct smb2_context *smb2,
 
         fslen = rep->output_buffer_length;
         rep->output_buffer_offset = len + SMB2_HEADER_SIZE;
+        switch (info_class)
+        {
+        case SMB2_FILE_ID_FULL_DIRECTORY_INFORMATION:
+                entry_stride = PAD_TO_64BIT(sizeof(struct smb2_fileidfulldirectoryinformation));
+                break;
+        case SMB2_FILE_ID_BOTH_DIRECTORY_INFORMATION:
+                entry_stride = PAD_TO_64BIT(sizeof(struct smb2_fileidbothdirectoryinformation));
+                break;
+        default:
+                entry_stride = 0;
+                break;
+        }
 
-        if (rep->output_buffer) {
+        if (rep->output_buffer && entry_stride) {
                 if (1 /* !smb2->passthrough */) {
                         rep->output_buffer_length = 0;
                         in_offset = 0;
                         in_remain = fslen;
                         do {
-                                fs = (struct smb2_fileidbothdirectoryinformation*)(void *)(rep->output_buffer + in_offset);
+                                const char *entry_name;
+                                name = NULL;
+                                if (info_class == SMB2_FILE_ID_FULL_DIRECTORY_INFORMATION) {
+                                        fsf = (struct smb2_fileidfulldirectoryinformation*)(void *)(rep->output_buffer + in_offset);
+                                        entry_name = fsf->name;
+                                } else {
+                                        fsb = (struct smb2_fileidbothdirectoryinformation*)(void *)(rep->output_buffer + in_offset);
+                                        entry_name = fsb->name;
+                                }
                                 fname_len = 0;
-                                if (fs->name && fs->name[0]) {
-                                        name = smb2_utf8_to_utf16(fs->name);
+                                if (entry_name && entry_name[0]) {
+                                        name = smb2_utf8_to_utf16(entry_name);
                                         if (name == NULL) {
                                                 smb2_set_error(smb2, "Could not convert name into UTF-16");
                                                 return -1;
                                         }
                                         fname_len = 2 * name->len;
                                         free(name);
+                                        name = NULL;
                                 }
                                 switch (info_class)
                                 {
@@ -259,10 +282,10 @@ smb2_encode_query_directory_reply(struct smb2_context *smb2,
                                         break;
                                 }
                                 rep->output_buffer_length += fs_size;
-                                in_offset += PAD_TO_64BIT(sizeof(struct smb2_fileidbothdirectoryinformation));
-                                in_remain -= PAD_TO_64BIT(sizeof(struct smb2_fileidbothdirectoryinformation));
+                                in_offset += entry_stride;
+                                in_remain -= entry_stride;
                         }
-                        while (in_remain >= sizeof(struct smb2_fileidbothdirectoryinformation));
+                        while (in_remain >= (int)entry_stride);
                 }
         }
 
@@ -303,10 +326,53 @@ smb2_encode_query_directory_reply(struct smb2_context *smb2,
         else {
 
                 do {
-                        fs = (struct smb2_fileidbothdirectoryinformation*)(void *)(rep->output_buffer + in_offset);
+                        const char *entry_name;
+                        uint32_t file_index;
+                        struct smb2_timeval *creation_time;
+                        struct smb2_timeval *last_access_time;
+                        struct smb2_timeval *last_write_time;
+                        struct smb2_timeval *change_time;
+                        uint64_t end_of_file;
+                        uint64_t allocation_size;
+                        uint32_t file_attributes;
+                        uint32_t ea_size;
+                        uint64_t file_id;
+                        uint8_t short_name_length = 0;
+                        uint8_t *short_name = NULL;
+                        name = NULL;
+
+                        if (info_class == SMB2_FILE_ID_FULL_DIRECTORY_INFORMATION) {
+                                fsf = (struct smb2_fileidfulldirectoryinformation*)(void *)(rep->output_buffer + in_offset);
+                                entry_name = fsf->name;
+                                file_index = fsf->file_index;
+                                creation_time = &fsf->creation_time;
+                                last_access_time = &fsf->last_access_time;
+                                last_write_time = &fsf->last_write_time;
+                                change_time = &fsf->change_time;
+                                end_of_file = fsf->end_of_file;
+                                allocation_size = fsf->allocation_size;
+                                file_attributes = fsf->file_attributes;
+                                ea_size = fsf->ea_size;
+                                file_id = fsf->file_id;
+                        } else {
+                                fsb = (struct smb2_fileidbothdirectoryinformation*)(void *)(rep->output_buffer + in_offset);
+                                entry_name = fsb->name;
+                                file_index = fsb->file_index;
+                                creation_time = &fsb->creation_time;
+                                last_access_time = &fsb->last_access_time;
+                                last_write_time = &fsb->last_write_time;
+                                change_time = &fsb->change_time;
+                                end_of_file = fsb->end_of_file;
+                                allocation_size = fsb->allocation_size;
+                                file_attributes = fsb->file_attributes;
+                                ea_size = fsb->ea_size;
+                                file_id = fsb->file_id;
+                                short_name_length = fsb->short_name_length;
+                                short_name = fsb->short_name;
+                        }
                         fname_len = 0;
-                        if (fs->name && fs->name[0]) {
-                                name = smb2_utf8_to_utf16(fs->name);
+                        if (entry_name && entry_name[0]) {
+                                name = smb2_utf8_to_utf16(entry_name);
                                 if (name == NULL) {
                                         smb2_set_error(smb2, "Could not convert name into UTF-16");
                                         return -1;
@@ -325,9 +391,9 @@ smb2_encode_query_directory_reply(struct smb2_context *smb2,
                                 fs_size = 0;
                                 break;
                         }
-                        in_offset += PAD_TO_64BIT(sizeof(struct smb2_fileidbothdirectoryinformation));
-                        in_remain -= PAD_TO_64BIT(sizeof(struct smb2_fileidbothdirectoryinformation));
-                        if (in_remain >= SMB2_FILEID_BOTH_DIRECTORY_INFORMATION_SIZE) {
+                        in_offset += entry_stride;
+                        in_remain -= entry_stride;
+                        if (in_remain >= (int)entry_stride) {
                                 smb2_set_uint32(iov, offset + 0, fs_size);
                         }
                         else {
@@ -338,39 +404,41 @@ smb2_encode_query_directory_reply(struct smb2_context *smb2,
                         {
                         case SMB2_FILE_ID_FULL_DIRECTORY_INFORMATION:
                                 fs_size = PAD_TO_64BIT(SMB2_FILEID_FULL_DIRECTORY_INFORMATION_SIZE + fname_len);
-                                smb2_set_uint32(iov, offset + 4, fs->file_index);
-                                smb2_set_uint64(iov, offset + 8, smb2_timeval_to_win(&fs->creation_time));
-                                smb2_set_uint64(iov, offset + 16, smb2_timeval_to_win(&fs->last_access_time));
-                                smb2_set_uint64(iov, offset + 24, smb2_timeval_to_win(&fs->last_write_time));
-                                smb2_set_uint64(iov, offset + 32, smb2_timeval_to_win(&fs->change_time));
-                                smb2_set_uint64(iov, offset + 40, fs->end_of_file);
-                                smb2_set_uint64(iov, offset + 48, fs->allocation_size);
-                                smb2_set_uint32(iov, offset + 56, fs->file_attributes);
+                                smb2_set_uint32(iov, offset + 4, file_index);
+                                smb2_set_uint64(iov, offset + 8, smb2_timeval_to_win(creation_time));
+                                smb2_set_uint64(iov, offset + 16, smb2_timeval_to_win(last_access_time));
+                                smb2_set_uint64(iov, offset + 24, smb2_timeval_to_win(last_write_time));
+                                smb2_set_uint64(iov, offset + 32, smb2_timeval_to_win(change_time));
+                                smb2_set_uint64(iov, offset + 40, end_of_file);
+                                smb2_set_uint64(iov, offset + 48, allocation_size);
+                                smb2_set_uint32(iov, offset + 56, file_attributes);
                                 smb2_set_uint32(iov, offset + 60, fname_len);
-                                smb2_set_uint32(iov, offset + 64, fs->ea_size);
+                                smb2_set_uint32(iov, offset + 64, ea_size);
                                 smb2_set_uint32(iov, offset + 68, 0); /* reserved */
-                                smb2_set_uint64(iov, offset + 72, fs->file_id);
+                                smb2_set_uint64(iov, offset + 72, file_id);
                                 if (name && fname_len > 0) {
                                         memcpy(buf + offset + SMB2_FILEID_FULL_DIRECTORY_INFORMATION_SIZE, &name->val[0], fname_len);
                                 }
                                 break;
                         case SMB2_FILE_ID_BOTH_DIRECTORY_INFORMATION:
                                 fs_size = PAD_TO_64BIT(SMB2_FILEID_BOTH_DIRECTORY_INFORMATION_SIZE + fname_len);
-                                smb2_set_uint32(iov, offset + 4, fs->file_index);
-                                smb2_set_uint64(iov, offset + 8, smb2_timeval_to_win(&fs->creation_time));
-                                smb2_set_uint64(iov, offset + 16, smb2_timeval_to_win(&fs->last_access_time));
-                                smb2_set_uint64(iov, offset + 24, smb2_timeval_to_win(&fs->last_write_time));
-                                smb2_set_uint64(iov, offset + 32, smb2_timeval_to_win(&fs->change_time));
-                                smb2_set_uint64(iov, offset + 40, fs->end_of_file);
-                                smb2_set_uint64(iov, offset + 48, fs->allocation_size);
-                                smb2_set_uint32(iov, offset + 56, fs->file_attributes);
+                                smb2_set_uint32(iov, offset + 4, file_index);
+                                smb2_set_uint64(iov, offset + 8, smb2_timeval_to_win(creation_time));
+                                smb2_set_uint64(iov, offset + 16, smb2_timeval_to_win(last_access_time));
+                                smb2_set_uint64(iov, offset + 24, smb2_timeval_to_win(last_write_time));
+                                smb2_set_uint64(iov, offset + 32, smb2_timeval_to_win(change_time));
+                                smb2_set_uint64(iov, offset + 40, end_of_file);
+                                smb2_set_uint64(iov, offset + 48, allocation_size);
+                                smb2_set_uint32(iov, offset + 56, file_attributes);
                                 smb2_set_uint32(iov, offset + 60, fname_len);
-                                smb2_set_uint32(iov, offset + 64, fs->ea_size);
-                                smb2_set_uint8(iov, offset + 68, fs->short_name_length);
+                                smb2_set_uint32(iov, offset + 64, ea_size);
+                                smb2_set_uint8(iov, offset + 68, short_name_length);
                                 smb2_set_uint8(iov, offset + 69, 0); /* reserved */
-                                memcpy(iov->buf + offset + 70, fs->short_name, sizeof(fs->short_name));
+                                if (short_name) {
+                                        memcpy(iov->buf + offset + 70, short_name, 24);
+                                }
                                 smb2_set_uint16(iov, offset + 94, 0); /* reserved */
-                                smb2_set_uint64(iov, offset + 96, fs->file_id);
+                                smb2_set_uint64(iov, offset + 96, file_id);
                                 if (name && fname_len > 0) {
                                         memcpy(buf + offset + SMB2_FILEID_BOTH_DIRECTORY_INFORMATION_SIZE, &name->val[0], fname_len);
                                 }
@@ -381,11 +449,12 @@ smb2_encode_query_directory_reply(struct smb2_context *smb2,
 
                         if (name) {
                                 free(name);
+                                name = NULL;
                         }
 
                         offset += fs_size;
                 }
-                while (in_remain >= sizeof(struct smb2_fileidbothdirectoryinformation));
+                while (in_remain >= (int)entry_stride);
         }
         return 0;
 }
@@ -577,4 +646,3 @@ smb2_process_query_directory_request_variable(struct smb2_context *smb2,
         }
         return 0;
 }
-
