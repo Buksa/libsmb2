@@ -3144,9 +3144,10 @@ smb2_close_request_cb(struct smb2_server *server, struct smb2_context *smb2, voi
                 pdu = smb2_cmd_close_reply_async(smb2, &rep, NULL, cb_data);
         }
         else if (ret < 0) {
+                uint32_t status = ret == -1 ? SMB2_STATUS_NOT_IMPLEMENTED : ret;
                 memset(&err, 0, sizeof(err));
                 pdu = smb2_cmd_error_reply_async(smb2,
-                                &err, SMB2_CLOSE, SMB2_STATUS_NOT_IMPLEMENTED, NULL, cb_data);
+                                &err, SMB2_CLOSE, status, NULL, cb_data);
         }
         if (pdu != NULL) {
                 smb2_set_pdu_message_id(smb2, pdu, smb2->message_id);
